@@ -1,0 +1,64 @@
+# ============================================================================
+#  MCFix Agent —— systemd 单元
+#
+#  这是"跑在 MC 机器上"的那个小程序的常驻服务。
+#
+#  用法：
+#    1. 把 agent/mcfix-agent.php 放到 /opt/mcfix/
+#    2. 把后台生成的配置保存为 /opt/mcfix/config.php
+#    3. 把这个文件存为 /etc/systemd/system/mcfix-agent.service
+#    4. systemctl daemon-reload && systemctl enable --now mcfix-agent
+#
+#  ⚠️ Agent 只支持 Linux。它依赖 systemctl / screen / tmux / /proc /
+#     getconf / tar / pgrep，Windows 上跑不起来。
+# ============================================================================
+
+[Unit]
+Description=MCFix Agent (Minecraft server auto-repair agent)
+Documentation=https://github.com/OWNER/REPO
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+; 用完整路径，systemd 不做 PATH 查找
+ExecStart=/usr/bin/php /opt/mcfix/mcfix-agent.php
+
+; 掉线自动拉起
+Restart=always
+RestartSec=5
+
+; ---- 权限：强烈建议不要用 root ----
+;
+; Agent 需要的能力只有两类：
+;   1. 重启 MC 服务端（systemctl restart <你的单元>）
+;   2. 读服务端目录、打包存档（tar）
+;
+; 所以建一个专用用户 + sudoers 白名单就够了，
+; 不要图省事写 User=root —— 那是把整台机器交出去。
+#
+# useradd -r -s /usr/sbin/nologin mcfix
+# chown -R mcfix:mcfix /opt/mcfix
+# chmod 600 /opt/mcfix/config.php      # 配置里有面板令牌
+#
+# 然后 /etc/sudoers.d/mcfix 里写（用 visudo -f 编辑）：
+#   mcfix ALL=(root) NOPASSWD: /bin/systemctl restart minecraft-survival
+#   mcfix ALL=(root) NOPASSWD: /bin/systemctl start minecraft-survival
+#   mcfix ALL=(root) NOPASSWD: /bin/systemctl stop minecraft-survival
+#   mcfix ALL=(root) NOPASSWD: /bin/systemctl status minecraft-survival
+#
+# 注意：sudoers 里写的是**完整路径**，且 Unit 里的 User 必须是 mcfix。
+User=root
+
+; 日志走 journald，用 journalctl -u mcfix-agent -f 看
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mcfix-agent
+
+; 稍微收紧一点运行环境
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

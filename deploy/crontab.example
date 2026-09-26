@@ -1,0 +1,63 @@
+# ============================================================================
+#  MCFix —— 计划任务（crontab）示例
+#
+#  用法（宝塔用户看下面第二节，更省事）：
+#      crontab -u www -e      # 用跑网站的同一个用户
+#      把下面几行贴进去
+#
+#  ⚠️ 三件事必须先确认，不然任务会安静地不执行：
+#
+#    1. **PHP 路径**：先 `which php`。宝塔下一般是
+#       /www/server/php/83/bin/php
+#       绝对不要用 php-fpm —— 那是常驻进程，不是命令行解释器，
+#       填进去只会起一个 FPM 进程，脚本根本不跑，而且没有任何报错。
+#
+#    2. **项目路径**：换成你自己的，下面用 /www/wwwroot/mcfix 举例。
+#
+#    3. **用户**：必须是有权限写 storage/ 的那个用户。
+#       宝塔下通常是 www。
+# ============================================================================
+
+# ---- 1. 例行维护：每分钟一次（必需）----
+# 负责：回收卡住的任务、推进待复验工单、发邮件队列、重试失败的通知、
+#       清理缓存与限流文件、归档已解决的工单
+* * * * * cd /www/wwwroot/mcfix && /www/server/php/83/bin/php bin/mcfix.php cron >> /dev/null 2>&1
+
+# ---- 2. 每日备份（可选但强烈建议）----
+# 注意用 sqlite3 的 .backup 而不是 cp：
+# 数据库开了 WAL，热拷贝可能拿到不一致的快照，
+# 而且 -wal / -shm 两个附属文件不会跟着被复制。
+17 4 * * * sqlite3 /www/wwwroot/mcfix/storage/data/mcfix.sqlite ".backup '/www/backup/mcfix-$(date +\%F).sqlite'"
+
+# 备份保留 30 天
+25 4 * * * find /www/backup -name 'mcfix-*.sqlite' -mtime +30 -delete
+
+# ---- 3. 证书续期（用 Let's Encrypt 时必需）----
+# 大多数系统装了 certbot 就自带 certbot.timer，这一条是双保险。
+# 注意 3 和 17 都行，官方建议每天跑两次、加随机延迟。
+23 3,15 * * * certbot renew --quiet --deploy-hook 'systemctl reload nginx'
+
+# ---- 4. Agent 掉线告警（可选）----
+# 其实 bin/mcfix.php cron 里已经带了这个逻辑，
+# 只有当你没跑 cron、又想知道 Agent 死活时才需要单独加。
+
+# ============================================================================
+#  宝塔用户看这里 —— 不用碰 crontab
+# ============================================================================
+#
+# 【计划任务 → 添加任务】
+#
+#   任务类型：Shell 脚本
+#   任务名称：MCFix 维护
+#   执行周期：每分钟（N 分钟 → 1 分钟）
+#   脚本内容：
+#       cd /www/wwwroot/mcfix && /www/server/php/83/bin/php bin/mcfix.php cron
+#
+#   再添加一条：
+#   任务名称：MCFix 每日备份
+#   执行周期：每天 04:17
+#   脚本内容：
+#       sqlite3 /www/wwwroot/mcfix/storage/data/mcfix.sqlite ".backup '/www/backup/mcfix-$(date +\%F).sqlite'"
+#
+# 加完之后去【计划任务 → 日志】里确认它真的在跑 ——
+# 只在列表里看到任务不等于它执行成功了。

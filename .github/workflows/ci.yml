@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: php -l (PHP ${{ matrix.php }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # 7.4 是声明的最低版本，8.3 是当前主流面板版本
+        php: ['7.4', '8.3']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: pdo_sqlite, mbstring, json, openssl
+          coverage: none
+
+      - name: 全量语法检查
+        run: |
+          set -e
+          fail=0
+          while IFS= read -r -d '' file; do
+            out=$(php -l "$file" 2>&1) || { echo "$out"; fail=1; }
+          done < <(find . -name '*.php' -not -path './storage/*' -not -path './vendor/*' -print0)
+          exit $fail
+
+      - name: 冒烟测试
+        run: php tests/run.php
+
+  docs:
+    name: 文档与结构检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 模板 if/endif 配对
+        run: node deploy/check-alt-syntax.js
+
+      - name: 字符串内的 ?>（真实语法错误的常见来源）
+        run: node deploy/check-close-tag.js
+
+      - name: 确认没有把配置或运行时数据提交进来
+        run: |
+          set -e
+          fail=0
+
+          if [ -e config/config.php ]; then
+            echo "::error::config/config.php 不应该出现在仓库里"
+            fail=1
+          fi
+
+          # storage/ 下的目录结构要跟着仓库走（解压即用），所以不能拿"目录存在"
+          # 当判据 —— 只允许这四种占位/防护文件，其余一律视为运行时数据。
+          extra=$(find storage -type f \
+                    -not -name '.gitignore' -not -name '.gitkeep' \
+                    -not -name 'index.html' -not -name '.htaccess' \
+                  | head -20)
+          if [ -n "$extra" ]; then
+            echo "::error::storage/ 里有运行时文件："
+            echo "$extra"
+            fail=1
+          fi
+
+          db=$(find . -path ./.git -prune -o -type f \
+                 \( -name '*.sqlite' -o -name '*.sqlite3' -o -name '*.db' \) -print \
+               | head -20)
+          if [ -n "$db" ]; then
+            echo "::error::仓库里有数据库文件："
+            echo "$db"
+            fail=1
+          fi
+
+          if [ "$fail" -eq 0 ]; then
+            echo "OK：没有 config.php / 数据库 / 运行时数据被提交"
+          fi
+          exit $fail

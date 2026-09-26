@@ -1,0 +1,63 @@
+; ============================================================================
+;  MCFix —— PHP-FPM 池配置示例
+;
+;  用法：复制到 /etc/php/<版本>/fpm/pool.d/mcfix.conf，然后
+;          systemctl restart php<版本>-fpm
+;
+;  ★ 最容易踩的坑：user / group 必须和跑 Nginx 的用户一致。
+;    宝塔的 Nginx 以 www 运行，而 PHP 官方包默认是 www-data。
+;    两者不一致 → 502 Bad Gateway，而且 nginx 的错误日志只会说
+;    "connect() to unix:... failed (13: Permission denied)"，很容易看漏。
+;
+;  先确认 Nginx 用哪个用户：
+;      ps aux | grep nginx | head -3
+; ============================================================================
+
+[mcfix]
+; ★ 和 Nginx 的用户保持一致（宝塔一般是 www）
+user = www
+group = www
+
+; 监听方式：unix socket 比 TCP 快，也不用担心端口占用
+; 这个路径要和 nginx.conf.example 里的 fastcgi_pass 一致
+listen = /run/php/mcfix-fpm.sock
+
+; ★ socket 的属主也要跟着改，否则 Nginx 连不上
+listen.owner = www
+listen.group = www
+listen.mode = 0660
+
+; 进程数：个人服 / 小服 2~4 足够。
+; 注意：诊断请求会同步等 MC 服务器应答（最多 20 秒），
+; 所以池子太小的话，几个玩家同时提交就会排队。
+pm = dynamic
+pm.max_children      = 8
+pm.start_servers     = 2
+pm.min_spare_servers = 1
+pm.max_spare_servers = 4
+pm.max_requests      = 500
+
+; ★ 诊断可能要等端口恢复，默认 30 秒会被杀掉
+;   要比 nginx 的 fastcgi_read_timeout（示例里是 180）大
+request_terminate_timeout = 200
+
+; 报错要能看到，排查时把 display_errors 临时打开
+php_admin_value[error_log] = /www/wwwlogs/php-fpm-mcfix.log
+php_admin_flag[log_errors] = on
+
+; 上传上限（玩家要传崩溃日志，MOD 分发可能有 64 MB）
+php_admin_value[upload_max_filesize] = 64M
+php_admin_value[post_max_size]       = 64M
+php_admin_value[memory_limit]        = 256M
+
+; 时区
+php_admin_value[date.timezone] = Asia/Shanghai
+
+; ---- open_basedir（可选）----
+; 宝塔开了「防跨站攻击」时会自动加这一段。指向项目根目录即可，
+; 注意别把 storage 或 config 漏在外面，否则会因为无法写入而报错 500。
+; php_admin_value[open_basedir] = /www/wwwroot/mcfix:/tmp
+
+; ---- 环境变量覆盖（可选，容器化部署用）----
+; env[MCFIX_BASE_URL] = https://fankui.example.com
+; env[MCFIX_DB_PATH]  = storage/data/mcfix.sqlite

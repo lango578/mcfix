@@ -1,0 +1,270 @@
+# ============================================================================
+#  MCFix —— Nginx 站点配置示例
+#
+#  用法：把下面两个 server 块的 server_name 和路径改成你自己的，
+#        贴进宝塔的【网站 → 站点设置 → 配置文件】，或者直接放到
+#        /www/server/panel/vhost/nginx/你的站点.conf
+#
+#  两个域名的分工：
+#     fankui.example.com   玩家反馈站（对外，任何人都能打开）
+#     mc.example.com       管理后台（只给你自己，建议再加 IP 白名单）
+#
+#  只想用一个域名也行：把第二个 server 块整段删掉，
+#  后台会退回"私有随机路径"模式（https://你的域名/?r=console-xxxx）。
+#
+#  重要：root 必须指向 public/，不能指向项目根目录。
+#        源码、config/config.php（含签名密钥）和 SQLite 数据库都在上一级，
+#        指向根目录等于把它们放到公网上。
+# ============================================================================
+
+# ------------------------------------------------------------------ 日志格式
+#
+# 玩家的反馈链接把签名令牌放在查询串里（?r=feedback&t=...），而 nginx 默认的
+# $request / $request_uri 会把整串写进 access log —— 谁能读到 /www/wwwlogs/，
+# 谁就能在令牌有效期内直接打开那个玩家的工单。用 $uri（不含查询串）代替，
+# 排查接口和状态码完全不受影响。
+#
+# 这一段必须放在 http 作用域（本文件被 include 进 http，顶层指令即 http 级）。
+log_format mcfix_noquery '$remote_addr - $remote_user [$time_local] '
+                         '"$request_method $uri $server_protocol" $status $body_bytes_sent '
+                         '"$http_referer" "$http_user_agent"';
+
+# ------------------------------------------------------------------ HTTP/3（可选，默认关）
+#
+# 【什么时候该开】
+#   主要受众在国内、服务器在境外（香港 / 日本 / 新加坡），而且**链路丢包**明显。
+#   先量一下再决定：ping 你的服务器 50 次，丢包超过 1% 就算明显。
+#
+#   为什么丢包比延迟更致命：丢一个包，TCP 就要等重传超时（初始 1 秒起），
+#   而 HTTP/2 跑在 TCP 上 —— 一个包丢了，这条连接上**所有**请求一起卡住。
+#   实测过一条 12% 丢包、但 RTT 只有 24ms 的链路：服务端处理稳定 0.15 秒，
+#   用户侧却经常卡 1~4 秒，全是 TCP 在替丢包背锅。
+#   QUIC 没有这个队头阻塞，握手也只要 1 个 RTT（TCP+TLS 要 2 个）。
+#
+# 【什么时候不要开】
+#   用户网络封 UDP 的时候。开了之后浏览器会**先试 QUIC、超时、再回退到 TCP**，
+#   第一次访问反而更慢。国内部分公司网、校园网会封 UDP。
+#
+#   所以**不要凭感觉开，先验证**：找一个国内的真实客户端访问一次，然后看
+#       grep 'HTTP/3' /www/wwwlogs/mcfix-feedback.access.log
+#   有输出 = 这条链路 UDP 通，可以留；
+#   没输出 = 不通，把 listen ... quic 和 Alt-Svc 都去掉，退回 HTTP/2。
+#
+# 【开了之后必须做三件事，少一件都不生效】
+#   1. 防火墙放行 **UDP** 443 —— 绝大多数 443 规则只放行了 TCP：
+#          ufw allow 443/udp
+#      漏了这一步 QUIC 根本连不上，而且**从 nginx 配置上完全看不出来**，
+#      只会表现为"开了好像也没变快"。
+#   2. 每个 443 server 块加一行 `listen 443 quic;`（下面两个块里都放好了，注释状态）
+#   3. 加 Alt-Svc 响应头，浏览器才知道这个站支持 h3（同样已放好，注释状态）
+#
+# 【ma 设多大】
+#   ma=3600 表示浏览器记住"这个站支持 h3"一小时。刚上线用短的：
+#   万一 UDP 其实不通，最多影响一小时就自动忘掉。确认稳定后再改 86400。
+#
+# 【和 ssl_session_tickets 的关系】
+#   它必须为 on。这个开关同时管 TLS 1.3 和 QUIC 的会话恢复，
+#   设成 off 会让每次连接都完整握手 —— 丢包链路上每次握手都有很高概率吃到
+#   重传停滞，等于把 QUIC 的好处抵消掉一大半。
+
+# ------------------------------------------------------------------ 玩家反馈站
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name fankui.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/fankui.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/fankui.example.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    # 必须 on：这个开关同时管 TLS 1.3 和 QUIC 的会话恢复。设成 off 的话
+    # 每次连接都要完整握手，在丢包链路上代价很高（见上面 HTTP/3 那段说明）。
+    # 担心前向保密的话：nginx 每次启动会生成新的随机票据密钥，
+    # 也可以用 ssl_session_ticket_key 指定文件并定期轮换。
+    ssl_session_tickets on;
+
+    # ↓ 要开 HTTP/3 就把下面两行的注释去掉，并确认已 `ufw allow 443/udp`
+    # listen 443 quic;
+    # add_header Alt-Svc 'h3=":443"; ma=3600' always;
+
+    # ★ 关键：指向 public，不是项目根目录
+    root /www/wwwroot/mcfix/public;
+    index index.php;
+
+    # ★ 用上面那个不记查询串的格式（玩家站 URL 里带令牌）
+    access_log /www/wwwlogs/mcfix-feedback.access.log mcfix_noquery;
+    # 后台 URL 里没有令牌，保留完整信息更好排查
+    error_log  /www/wwwlogs/mcfix-feedback.error.log;
+
+    # 玩家可能要上传崩溃日志，稍微放宽一点
+    client_max_body_size 8m;
+
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options SAMEORIGIN always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
+    # 双保险：即使运行目录配错了，这几条也不让源码和配置被下载
+    location ~ ^/(config|storage|src|bin|views|admin|deploy|tests)/ {
+        deny all;
+        return 404;
+    }
+    location ~ /\.(?!well-known) {
+        deny all;
+        return 404;
+    }
+
+    # 证书续期要用，必须放行
+    location ^~ /.well-known/acme-challenge/ {
+        root /www/wwwroot/mcfix/public;
+        default_type "text/plain";
+        allow all;
+    }
+
+    location ~* \.(css|js|png|jpg|jpeg|svg|ico|woff2?)$ {
+        expires 7d;
+        access_log off;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        try_files $uri =404;
+        # 这个 socket 要和 PHP-FPM 池配置里的 listen 一致
+        fastcgi_pass unix:/run/php/mcfix-fpm.sock;
+        fastcgi_index index.php;
+        include fastcgi.conf;
+        # 诊断要连 MC 服务器 + 等端口恢复，60 秒经常不够
+        fastcgi_read_timeout 180;
+        fastcgi_buffers 16 32k;
+        fastcgi_buffer_size 64k;
+    }
+
+    location = /robots.txt {
+        return 200 "User-agent: *\nDisallow: /\n";
+        add_header Content-Type text/plain;
+    }
+}
+
+# ------------------------------------------------------------------ 管理后台
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name mc.example.com;
+
+    # 两个域名可以共用同一张证书（把两个域名都签进去即可）
+    ssl_certificate     /etc/letsencrypt/live/fankui.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/fankui.example.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    # 必须 on：这个开关同时管 TLS 1.3 和 QUIC 的会话恢复。设成 off 的话
+    # 每次连接都要完整握手，在丢包链路上代价很高（见上面 HTTP/3 那段说明）。
+    # 担心前向保密的话：nginx 每次启动会生成新的随机票据密钥，
+    # 也可以用 ssl_session_ticket_key 指定文件并定期轮换。
+    ssl_session_tickets on;
+
+    # ↓ 要开 HTTP/3 就把下面两行的注释去掉，并确认已 `ufw allow 443/udp`
+    # listen 443 quic;
+    # add_header Alt-Svc 'h3=":443"; ma=3600' always;
+
+    root /www/wwwroot/mcfix/public;
+    index index.php;
+
+    access_log /www/wwwlogs/mcfix-console.access.log;
+    error_log  /www/wwwlogs/mcfix-console.error.log;
+
+    client_max_body_size 8m;
+
+    # 后台的响应头更严：不允许被 iframe，不给 referrer，不许被搜索引擎收录
+    add_header X-Frame-Options DENY always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy no-referrer always;
+    add_header X-Robots-Tag "noindex, nofollow, noarchive" always;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
+    location ~ ^/(config|storage|src|bin|views|admin|deploy|tests)/ {
+        deny all;
+        return 404;
+    }
+    location ~ /\.(?!well-known) {
+        deny all;
+        return 404;
+    }
+    location ^~ /.well-known/acme-challenge/ {
+        root /www/wwwroot/mcfix/public;
+        default_type "text/plain";
+        allow all;
+    }
+
+    location ~* \.(css|js|png|jpg|jpeg|svg|ico|woff2?)$ {
+        expires 7d;
+        access_log off;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        try_files $uri =404;
+        fastcgi_pass unix:/run/php/mcfix-fpm.sock;
+        fastcgi_index index.php;
+        include fastcgi.conf;
+        fastcgi_read_timeout 180;
+        fastcgi_buffers 16 32k;
+        fastcgi_buffer_size 64k;
+    }
+
+    location = /robots.txt {
+        return 200 "User-agent: *\nDisallow: /\n";
+        add_header Content-Type text/plain;
+    }
+
+    # 可选：只允许你自己的 IP 访问后台。
+    # 比在应用里配 admin.ip_allow 更早拦截，被扫的时候连 PHP 都不会启动。
+    # 注意别把自己锁在外面 —— 先确认出口 IP 再取消注释。
+    #
+    # allow 203.0.113.10;
+    # allow 192.168.1.0/24;
+    # deny all;
+}
+
+# ------------------------------------------------------------------ HTTP 跳 HTTPS
+# ACME 验证路径必须放行，否则证书续期会失败
+server {
+    listen 80;
+    server_name fankui.example.com;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /www/wwwroot/mcfix/public;
+        default_type "text/plain";
+        allow all;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 80;
+    server_name mc.example.com;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /www/wwwroot/mcfix/public;
+        default_type "text/plain";
+        allow all;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
