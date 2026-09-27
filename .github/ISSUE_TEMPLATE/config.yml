@@ -1,0 +1,17 @@
+# 注意：下面 contact_links 里的仓库地址已经指向本仓库。
+# 如果你 fork 或克隆了本项目，请把三处 https://github.com/lango578/mcfix
+# 换成你自己的仓库地址，否则"安全漏洞"和"常见问题"这两个链接会指向作者的仓库。
+blank_issues_enabled: true
+
+contact_links:
+  - name: 安全漏洞（请勿公开）
+    url: https://github.com/lango578/mcfix/security/advisories/new
+    about: 请用私密漏洞报告，不要在公开 Issue 里披露。详见 SECURITY.md
+
+  - name: 部署文档 / 常见问题
+    url: https://github.com/lango578/mcfix/blob/main/README.md#常见问题
+    about: 502、后台登录、Agent 离线、计划任务等高频问题先看这里
+
+  - name: 现状与已知限制
+    url: https://github.com/lango578/mcfix/blob/main/README.md#现状与已知限制
+    about: Agent 只支持 Linux、monitor_server 不自动跑……这些是已知行为，不是 bug

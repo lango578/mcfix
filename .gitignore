@@ -1,0 +1,56 @@
+# 运行时数据与本地配置：不要提交到版本库
+
+# 安装向导生成的配置（含签名密钥、后台口令哈希、Agent 令牌）
+config/config.php
+config/*.php
+!config/.gitkeep
+
+# SQLite 数据库与备份
+storage/data/*
+!storage/data/.gitignore
+!storage/data/index.html
+
+# 日志、缓存、锁、限流桶、密钥、MOD 文件库
+# （保留各目录下的 index.html / .gitkeep，这样目录结构会跟着仓库走）
+storage/logs/*
+storage/cache/*
+storage/locks/*
+storage/ratelimit/*
+storage/keys/*
+storage/mods/*
+!storage/logs/.gitkeep
+!storage/keys/.gitkeep
+!storage/logs/index.html
+!storage/cache/index.html
+!storage/locks/index.html
+!storage/ratelimit/index.html
+!storage/keys/index.html
+!storage/mods/index.html
+
+# 备份与导出
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.bak
+*.backup
+
+# 编辑器 / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 依赖（本项目零依赖，留这几行防止将来误提交）
+/vendor/
+/node_modules/
+
+# 本地测试与调试产物
+/coverage/
+*.log
+!storage/logs/index.html
